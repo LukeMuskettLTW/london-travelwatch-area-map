@@ -1,0 +1,492 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>London TravelWatch Area Map</title>
+
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
+  <style>
+    html, body { height: 100%; margin: 0; }
+    #map { height: 100%; width: 100%; }
+
+    .panel {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      z-index: 1000;
+      width: 360px;
+      max-width: calc(100vw - 24px);
+      background: rgba(255,255,255,0.97);
+      border-radius: 12px;
+      box-shadow: 0 8px 26px rgba(0,0,0,0.16);
+      padding: 12px;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    }
+    .panel h3 { margin: 0 0 10px 0; font-size: 18px; line-height: 1.2; }
+
+    .row { display: flex; gap: 10px; align-items: center; }
+    .row + .row { margin-top: 8px; }
+    label { display: flex; align-items: center; gap: 10px; font-size: 15px; }
+    input[type="checkbox"] { transform: scale(1.1); }
+
+    .section { margin-top: 14px; border-top: 1px solid rgba(0,0,0,0.08); padding-top: 12px; }
+
+    .search label { font-weight: 700; margin-bottom: 8px; display: block; font-size: 16px; }
+    .search .row { align-items: stretch; }
+    .search input[type="text"]{
+      flex: 1;
+      padding: 10px 12px;
+      border: 1px solid rgba(0,0,0,0.22);
+      border-radius: 10px;
+      font-size: 15px;
+      outline: none;
+    }
+    .btn {
+      padding: 10px 12px;
+      border: 0;
+      border-radius: 10px;
+      font-size: 15px;
+      cursor: pointer;
+      background: #2b2b2b;
+      color: #fff;
+      white-space: nowrap;
+    }
+    .hint { margin-top: 8px; font-size: 12px; color: rgba(0,0,0,0.68); line-height: 1.35; }
+
+    /* Separate floating key (bottom-right) */
+    .map-key {
+      background: rgba(255,255,255,0.95);
+      padding: 10px 12px;
+      border-radius: 12px;
+      box-shadow: 0 8px 26px rgba(0,0,0,0.16);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      font-size: 13px;
+      line-height: 1.25;
+    }
+    .map-key .title {
+      font-weight: 700;
+      margin: 0 0 8px 0;
+      font-size: 13px;
+    }
+    .map-key .legend {
+      display: grid;
+      grid-template-columns: 14px 1fr;
+      gap: 8px 10px;
+      align-items: center;
+    }
+    .map-key .swatch {
+      width: 12px;
+      height: 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(0,0,0,0.25);
+    }
+  </style>
+</head>
+
+<body>
+  <div id="map"></div>
+
+  <div class="panel">
+    <h3>London TravelWatch Area Map</h3>
+
+    <!-- LTW first (area then stations), then TF (area then stations) -->
+    <!-- Stations OFF by default -->
+    <div class="row">
+      <label><input id="chkLtwArea" type="checkbox" checked> London TravelWatch area</label>
+    </div>
+    <div class="row">
+      <label><input id="chkLtwStations" type="checkbox"> London TravelWatch stations</label>
+    </div>
+    <div class="row">
+      <label><input id="chkTfArea" type="checkbox"> Transport Focus area</label>
+    </div>
+    <div class="row">
+      <label><input id="chkTfStations" type="checkbox"> Transport Focus stations</label>
+    </div>
+
+    <div class="section search">
+      <label for="txtSearch">Search station…</label>
+      <div class="row">
+        <input id="txtSearch" type="text" placeholder="e.g. Orpington" />
+        <button id="btnSearch" class="btn" type="button">Go</button>
+      </div>
+      <div class="hint">
+        Searches station name (case-insensitive), zooms, and opens the popup.
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // ---------------------------
+    // Files (relative to index.html)
+    // ---------------------------
+    const CSV_FILE = "correct_ltw_list.csv";
+    const BOUNDARY_FILE = "ltw_remit_boundary.geojson";
+
+    // Toggle this ON if you keep hitting caching while editing CSV/GeoJSON
+    const CACHE_BUST = false;
+
+    // Grouping: same name + same remit, within this distance (meters) => ONE dot
+    const GROUP_WITHIN_METERS = 350;
+
+    const REMIT_LTW = "London TravelWatch";
+    const REMIT_TF  = "Transport Focus";
+
+    const toBool = (v) => String(v).trim().toLowerCase() === "true" || v === true;
+
+    // Normalise name for grouping/searching
+    const keyify = (s) => String(s || "")
+      .trim()
+      .toLowerCase()
+      .replace(/\s+/g, " ");
+
+    // Basic Haversine distance (meters)
+    function distMeters(aLat, aLon, bLat, bLon) {
+      const R = 6371000;
+      const toRad = (d) => d * Math.PI / 180;
+      const dLat = toRad(bLat - aLat);
+      const dLon = toRad(bLon - aLon);
+      const lat1 = toRad(aLat);
+      const lat2 = toRad(bLat);
+      const sin1 = Math.sin(dLat / 2);
+      const sin2 = Math.sin(dLon / 2);
+      const h = sin1 * sin1 + Math.cos(lat1) * Math.cos(lat2) * sin2 * sin2;
+      return 2 * R * Math.asin(Math.min(1, Math.sqrt(h)));
+    }
+
+    function withCacheBuster(urlStr) {
+      if (!CACHE_BUST) return urlStr;
+      const u = new URL(urlStr, window.location.href);
+      u.searchParams.set("v", Date.now().toString());
+      return u.toString();
+    }
+
+    // Resolve URLs safely for localhost, GitHub Pages subpaths, and future hosting
+    const csvUrl = withCacheBuster(new URL(CSV_FILE, window.location.href).toString());
+    const boundaryUrl = withCacheBuster(new URL(BOUNDARY_FILE, window.location.href).toString());
+
+    // ---------------------------
+    // Map
+    // ---------------------------
+    const map = L.map("map", { preferCanvas: true }).setView([51.5074, -0.1278], 9);
+
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    // Floating Key (bottom-right) — light green, dark green, light red, dark red
+    const keyControl = L.control({ position: "bottomright" });
+    keyControl.onAdd = function () {
+      const div = L.DomUtil.create("div", "map-key");
+      L.DomEvent.disableClickPropagation(div);
+      L.DomEvent.disableScrollPropagation(div);
+
+      div.innerHTML = `
+        <div class="title">Key</div>
+        <div class="legend">
+          <div class="swatch" style="background:#0b7a3b; opacity:0.22;"></div>
+          <div>London TravelWatch area</div>
+
+          <div class="swatch" style="background:#0b7a3b;"></div>
+          <div>London TravelWatch station</div>
+
+          <div class="swatch" style="background:#b2182b; opacity:0.10;"></div>
+          <div>Transport Focus area</div>
+
+          <div class="swatch" style="background:#b2182b;"></div>
+          <div>Transport Focus station</div>
+        </div>
+      `;
+      return div;
+    };
+    keyControl.addTo(map);
+
+    // ---------------------------
+    // Layers
+    // ---------------------------
+    const ltwStationsLayer = L.layerGroup();
+    const tfStationsLayer  = L.layerGroup();
+    let ltwAreaLayer = null;
+    let tfAreaLayer  = null;
+
+    function circleStyle(remit) {
+      return remit === REMIT_LTW
+        ? { radius: 5, weight: 1, opacity: 1.0, fillOpacity: 0.85 }
+        : { radius: 5, weight: 1, opacity: 0.9, fillOpacity: 0.65 };
+    }
+
+    function circleColors(remit) {
+      return remit === REMIT_LTW
+        ? { color: "#0b7a3b", fillColor: "#0b7a3b" }
+        : { color: "#b2182b", fillColor: "#b2182b" };
+    }
+
+    function applyLayerToggles() {
+      const showLtwArea     = document.getElementById("chkLtwArea").checked;
+      const showLtwStations = document.getElementById("chkLtwStations").checked;
+      const showTfArea      = document.getElementById("chkTfArea").checked;
+      const showTfStations  = document.getElementById("chkTfStations").checked;
+
+      if (ltwAreaLayer) { if (showLtwArea) map.addLayer(ltwAreaLayer); else map.removeLayer(ltwAreaLayer); }
+      if (tfAreaLayer)  { if (showTfArea)  map.addLayer(tfAreaLayer);  else map.removeLayer(tfAreaLayer); }
+
+      if (showLtwStations) map.addLayer(ltwStationsLayer); else map.removeLayer(ltwStationsLayer);
+      if (showTfStations)  map.addLayer(tfStationsLayer);  else map.removeLayer(tfStationsLayer);
+    }
+
+    // ---------------------------
+    // Station grouping + search index
+    // ---------------------------
+    // We group by (nameKey + remit) and merge any points within GROUP_WITHIN_METERS.
+    //
+    // groups: {
+    //   key: { name, nameKey, remit, lat, lon, modes:Set, count, marker }
+    // }
+    const groups = new Map();
+    const allGrouped = []; // for searching (same objects as in groups, pushed after creation)
+
+    function buildPopupHtml(g) {
+      const modesList = Array.from(g.modes).sort();
+      return (
+        `<b>${g.name}</b><br>` +
+        `Remit: ${g.remit}<br>` +
+        (modesList.length ? `Modes: ${modesList.join(", ")}<br>` : ``)
+      );
+    }
+
+    function createOrMergeGroup(name, remit, lat, lon, mode) {
+      const nameKey = keyify(name);
+      const groupKey = `${remit}||${nameKey}`;
+
+      // If we already have a group for this name+remit, see if this point is close enough
+      // If it's far away, we allow a second group by suffixing a counter.
+      const existing = [];
+      for (const [k, g] of groups.entries()) {
+        if (k === groupKey || k.startsWith(groupKey + "##")) existing.push({ k, g });
+      }
+
+      for (const { k, g } of existing) {
+        const d = distMeters(g.lat, g.lon, lat, lon);
+        if (d <= GROUP_WITHIN_METERS) {
+          // merge into existing group
+          const oldCount = g.count;
+          g.count += 1;
+          if (mode) g.modes.add(mode);
+
+          // weighted centroid
+          g.lat = (g.lat * oldCount + lat) / g.count;
+          g.lon = (g.lon * oldCount + lon) / g.count;
+
+          // update marker position + popup
+          g.marker.setLatLng([g.lat, g.lon]);
+          g.marker.setPopupContent(buildPopupHtml(g));
+          return g;
+        }
+      }
+
+      // No close group found — create a new one
+      let finalKey = groupKey;
+      if (groups.has(finalKey)) {
+        let i = 2;
+        while (groups.has(`${groupKey}##${i}`)) i++;
+        finalKey = `${groupKey}##${i}`;
+      }
+
+      const g = {
+        name,
+        nameKey,
+        remit,
+        lat,
+        lon,
+        modes: new Set(mode ? [mode] : []),
+        count: 1,
+        marker: null
+      };
+
+      const marker = L.circleMarker([lat, lon], {
+        ...circleStyle(remit),
+        ...circleColors(remit)
+      });
+
+      marker.bindPopup(buildPopupHtml(g));
+      g.marker = marker;
+
+      // Put marker in correct layer
+      if (remit === REMIT_LTW) marker.addTo(ltwStationsLayer);
+      else marker.addTo(tfStationsLayer);
+
+      groups.set(finalKey, g);
+      allGrouped.push(g);
+      return g;
+    }
+
+    async function loadStationsFromCSV() {
+      // clear prior state (so refreshes don't “duplicate”)
+      ltwStationsLayer.clearLayers();
+      tfStationsLayer.clearLayers();
+      groups.clear();
+      allGrouped.length = 0;
+
+      return new Promise((resolve, reject) => {
+        Papa.parse(csvUrl, {
+          download: true,
+          header: true,
+          dynamicTyping: true,
+          skipEmptyLines: true,
+          complete: (results) => {
+            try {
+              if (results.errors && results.errors.length) {
+                console.warn("PapaParse errors:", results.errors);
+              }
+
+              const rows = results.data || [];
+              let bad = 0;
+
+              for (const r of rows) {
+                const lat = r.latitude;
+                const lon = r.longitude;
+
+                if (typeof lat !== "number" || typeof lon !== "number" || !isFinite(lat) || !isFinite(lon)) {
+                  bad++;
+                  continue;
+                }
+
+                const remit = toBool(r.in_ltw_area) ? REMIT_LTW : REMIT_TF;
+                const name = r.name || "(no name)";
+                const mode = r.mode ? String(r.mode).trim() : "";
+
+                createOrMergeGroup(name, remit, lat, lon, mode);
+              }
+
+              console.log(`CSV rows=${rows.length}, badCoords=${bad}, groupedMarkers=${allGrouped.length}`);
+              resolve();
+            } catch (e) {
+              reject(e);
+            }
+          },
+          error: (err) => reject(err)
+        });
+      });
+    }
+
+    async function loadBoundaryGeoJSON() {
+      const resp = await fetch(boundaryUrl, { cache: "no-store" });
+      if (!resp.ok) throw new Error(`Boundary fetch failed: ${resp.status} ${resp.statusText}`);
+
+      const geo = await resp.json();
+
+      if (ltwAreaLayer) { map.removeLayer(ltwAreaLayer); ltwAreaLayer = null; }
+      if (tfAreaLayer)  { map.removeLayer(tfAreaLayer);  tfAreaLayer = null; }
+
+      const feats = (geo && geo.features) ? geo.features : [];
+      const ltwFeats = [];
+      const tfFeats = [];
+
+      for (const f of feats) {
+        const props = f.properties || {};
+        const tag = String(props.area || props.remit || "").toLowerCase();
+        if (tag === "ltw") ltwFeats.push(f);
+        if (tag === "tf" || tag === "gb_rest" || tag === "transport_focus") tfFeats.push(f);
+      }
+
+      if (!ltwFeats.length && !tfFeats.length) {
+        throw new Error(`Boundary file loaded but features are not tagged as area=ltw and area=tf.`);
+      }
+
+      // interactive=false so polygons do NOT intercept station clicks
+      if (ltwFeats.length) {
+        ltwAreaLayer = L.geoJSON(
+          { type: "FeatureCollection", features: ltwFeats },
+          {
+            interactive: false,
+            style: {
+              color: "#0b7a3b",
+              weight: 3,
+              opacity: 1,
+              fillColor: "#0b7a3b",
+              fillOpacity: 0.12
+            }
+          }
+        );
+      }
+
+      if (tfFeats.length) {
+        // Fill-only to avoid red outlines on rivers/coastlines (e.g. Thames)
+        tfAreaLayer = L.geoJSON(
+          { type: "FeatureCollection", features: tfFeats },
+          {
+            interactive: false,
+            style: {
+              color: "transparent",
+              weight: 0,
+              opacity: 0,
+              fillColor: "#b2182b",
+              fillOpacity: 0.09
+            }
+          }
+        );
+      }
+
+      applyLayerToggles();
+    }
+
+    function doSearch() {
+      const qRaw = document.getElementById("txtSearch").value;
+      const q = keyify(qRaw);
+      if (!q) return;
+
+      // match exact nameKey first, then partial
+      let hit = allGrouped.find(g => g.nameKey === q);
+      if (!hit) hit = allGrouped.find(g => g.nameKey.includes(q));
+
+      if (!hit) return alert(`No match found for: ${qRaw}`);
+
+      // Ensure the relevant station layer is visible
+      if (hit.remit === REMIT_LTW) document.getElementById("chkLtwStations").checked = true;
+      else document.getElementById("chkTfStations").checked = true;
+
+      applyLayerToggles();
+      map.setView([hit.lat, hit.lon], 14, { animate: true });
+      hit.marker.openPopup();
+    }
+
+    // UI wiring
+    document.getElementById("chkLtwArea").addEventListener("change", applyLayerToggles);
+    document.getElementById("chkLtwStations").addEventListener("change", applyLayerToggles);
+    document.getElementById("chkTfArea").addEventListener("change", applyLayerToggles);
+    document.getElementById("chkTfStations").addEventListener("change", applyLayerToggles);
+
+    document.getElementById("btnSearch").addEventListener("click", doSearch);
+    document.getElementById("txtSearch").addEventListener("keydown", (e) => {
+      if (e.key === "Enter") doSearch();
+    });
+
+    // Init
+    (async function init() {
+      try {
+        await loadStationsFromCSV();
+        applyLayerToggles();
+        await loadBoundaryGeoJSON();
+      } catch (e) {
+        console.error("Map init error:", e);
+        alert("Map data failed to load. Please refresh and try again.");
+      }
+    })();
+  </script>
+</body>
+</html>
