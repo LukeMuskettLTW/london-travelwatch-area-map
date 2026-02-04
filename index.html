@@ -1,0 +1,709 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>London TravelWatch Area Map</title>
+
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+    crossorigin=""
+  />
+  <script
+    src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+    integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+    crossorigin=""
+  ></script>
+
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+
+  <style>
+    html, body { height: 100%; margin: 0; }
+    #map { height: 100%; width: 100%; }
+
+    .panel {
+      position: absolute;
+      top: 12px;
+      right: 12px;
+      z-index: 1000;
+      width: 360px;
+      max-width: calc(100vw - 24px);
+      background: rgba(255,255,255,0.97);
+      border-radius: 14px;
+      box-shadow: 0 8px 26px rgba(0,0,0,0.16);
+      padding: 14px;
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+    }
+
+    .panel-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 10px;
+    }
+    .panel h3 { margin: 0; font-size: 18px; line-height: 1.2; }
+
+    .chevron-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 40px;
+      height: 40px;
+      border-radius: 12px;
+      border: 1px solid rgba(0,0,0,0.12);
+      background: rgba(255,255,255,0.9);
+      cursor: pointer;
+      user-select: none;
+    }
+    .chevron-btn:focus-visible {
+      outline: 3px solid #ffd24d;
+      outline-offset: 2px;
+    }
+    .chevron {
+      width: 18px;
+      height: 18px;
+      display: inline-block;
+      transition: transform 180ms ease;
+      transform-origin: 50% 50%;
+    }
+    .chevron-btn[aria-expanded="true"] .chevron { transform: rotate(180deg); }
+
+    .toggles-wrap {
+      overflow: hidden;
+      transition: max-height 220ms ease, opacity 160ms ease;
+      opacity: 1;
+      max-height: 500px;
+    }
+    .toggles-wrap.collapsed {
+      opacity: 0;
+      max-height: 0;
+      pointer-events: none;
+      margin: 0;
+      padding: 0;
+    }
+
+    .row { display: flex; gap: 10px; align-items: center; }
+    .row + .row { margin-top: 8px; }
+    label { display: flex; align-items: center; gap: 10px; font-size: 15px; }
+    input[type="checkbox"] { transform: scale(1.1); }
+
+    .section {
+      margin-top: 12px;
+      border-top: 1px solid rgba(0,0,0,0.08);
+      padding-top: 12px;
+    }
+
+    .search label {
+      font-weight: 800;
+      margin-bottom: 8px;
+      display: block;
+      font-size: 16px;
+    }
+
+    /* search row */
+    .search .row { align-items: stretch; }
+
+    .search-wrap {
+      position: relative; /* anchors dropdown */
+      flex: 1 1 auto;
+      min-width: 0;       /* 🔑 prevents weird flex overflow */
+    }
+
+    .search input[type="text"]{
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid rgba(0,0,0,0.22);
+      border-radius: 10px;
+      font-size: 15px;
+      outline: none;
+      box-sizing: border-box;
+    }
+
+    .btn {
+      flex: 0 0 auto;
+      padding: 10px 14px;
+      border: 0;
+      border-radius: 10px;
+      font-size: 15px;
+      cursor: pointer;
+      background: #0b7a3b;
+      color: #ffffff;
+      white-space: nowrap;
+    }
+    .btn:hover { background: #095f2e; }
+    .btn:focus-visible {
+      outline: 3px solid #ffd24d;
+      outline-offset: 2px;
+    }
+
+    .secondary-btn {
+      width: 100%;
+      margin-top: 10px;
+      padding: 10px 12px;
+      border-radius: 10px;
+      border: 1px solid rgba(0,0,0,0.22);
+      background: rgba(255,255,255,0.9);
+      cursor: pointer;
+      font-size: 14px;
+    }
+    .secondary-btn:hover { background: rgba(255,255,255,1); }
+
+    /* ==== Styled typeahead dropdown (like your screenshot) ==== */
+    .suggestions {
+      position: absolute;
+      top: calc(100% + 8px);
+      left: 0;
+      right: 0;
+      background: #ffffff;
+      border-radius: 12px;
+      box-shadow: 0 10px 22px rgba(0,0,0,0.18);
+      border: 1px solid rgba(0,0,0,0.10);
+      overflow: hidden;
+      z-index: 2000;
+      max-height: 320px;
+      overflow-y: auto;
+      display: none;
+    }
+    .suggestions.open { display: block; }
+
+    .s-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 12px 12px;
+      cursor: pointer;
+      border-top: 1px solid rgba(0,0,0,0.06);
+      font-size: 14px;
+    }
+    .s-item:first-child { border-top: 0; }
+    .s-item:hover,
+    .s-item.active {
+      background: rgba(11,122,59,0.08);
+    }
+    .s-name {
+      font-weight: 650;
+      color: #111;
+    }
+    .s-badge {
+      font-size: 12px;
+      padding: 3px 8px;
+      border-radius: 999px;
+      border: 1px solid rgba(0,0,0,0.12);
+      background: rgba(0,0,0,0.04);
+      color: rgba(0,0,0,0.70);
+      flex: 0 0 auto;
+    }
+    .s-badge.ltw { background: rgba(11,122,59,0.10); border-color: rgba(11,122,59,0.25); color: #0b7a3b; }
+    .s-badge.tf  { background: rgba(178,24,43,0.08); border-color: rgba(178,24,43,0.22); color: #b2182b; }
+
+    /* Key */
+    .map-key {
+      background: rgba(255,255,255,0.95);
+      padding: 10px 12px;
+      border-radius: 12px;
+      box-shadow: 0 8px 26px rgba(0,0,0,0.16);
+      font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif;
+      font-size: 13px;
+      line-height: 1.25;
+    }
+    .map-key .title { font-weight: 800; margin: 0 0 8px 0; font-size: 13px; }
+    .map-key .legend {
+      display: grid;
+      grid-template-columns: 14px 1fr;
+      gap: 8px 10px;
+      align-items: center;
+    }
+    .map-key .swatch {
+      width: 12px;
+      height: 12px;
+      border-radius: 999px;
+      border: 1px solid rgba(0,0,0,0.25);
+    }
+
+    @media (max-width: 520px) {
+      .panel { width: 320px; }
+      label { font-size: 14px; }
+    }
+  </style>
+</head>
+
+<body>
+  <div id="map"></div>
+
+  <div class="panel" id="panel">
+    <div class="panel-header">
+      <h3>London TravelWatch Area Map</h3>
+
+      <button id="btnChevron" class="chevron-btn" type="button" aria-expanded="true" aria-controls="togglesWrap" title="Show/hide layers">
+        <svg class="chevron" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"></path>
+        </svg>
+      </button>
+    </div>
+
+    <div id="togglesWrap" class="toggles-wrap">
+      <div class="row">
+        <label><input id="chkLtwArea" type="checkbox" checked> London TravelWatch area</label>
+      </div>
+      <div class="row">
+        <label><input id="chkLtwStations" type="checkbox" checked> London TravelWatch stations</label>
+      </div>
+      <div class="row">
+        <label><input id="chkTfArea" type="checkbox"> Transport Focus area</label>
+      </div>
+      <div class="row">
+        <label><input id="chkTfStations" type="checkbox"> Transport Focus stations</label>
+      </div>
+    </div>
+
+    <div class="section search">
+      <label for="txtSearch">Search station…</label>
+
+      <div class="row">
+        <div class="search-wrap">
+          <input id="txtSearch" type="text" placeholder="e.g. Orpington" autocomplete="off" />
+          <div id="suggestions" class="suggestions" role="listbox" aria-label="Station suggestions"></div>
+        </div>
+
+        <button id="btnSearch" class="btn" type="button">Go</button>
+      </div>
+
+      <button id="btnZoomLtw" class="secondary-btn" type="button">
+        Zoom to London TravelWatch area
+      </button>
+    </div>
+  </div>
+
+  <script>
+    // Files (not shown in UI)
+    const CSV_FILE = "correct_ltw_list.csv";
+    const BOUNDARY_FILE = "ltw_remit_boundary.geojson";
+
+    const REMIT_LTW = "London TravelWatch";
+    const REMIT_TF  = "Transport Focus";
+
+    const toBool = (v) => String(v).trim().toLowerCase() === "true" || v === true;
+
+    function normalizeName(name) {
+      return String(name || "")
+        .toLowerCase()
+        .replace(/['’`"]/g, "")
+        .replace(/\b(railway|rail|train)\s+station\b/g, " ")
+        .replace(/\bstation\b/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+
+    function escapeHtml(s) {
+      return String(s || "")
+        .replace(/&/g, "&amp;").replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;").replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+    }
+
+    function isMobile() {
+      return window.matchMedia && window.matchMedia("(max-width: 520px)").matches;
+    }
+
+    // Map
+    const map = L.map("map", { preferCanvas: true }).setView([51.5074, -0.1278], 9);
+
+    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+      maxZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors'
+    }).addTo(map);
+
+    // Key
+    const keyControl = L.control({ position: "bottomright" });
+    keyControl.onAdd = function () {
+      const div = L.DomUtil.create("div", "map-key");
+      L.DomEvent.disableClickPropagation(div);
+      L.DomEvent.disableScrollPropagation(div);
+      div.innerHTML = `
+        <div class="title">Key</div>
+        <div class="legend">
+          <div class="swatch" style="background:#0b7a3b; opacity:0.22;"></div>
+          <div>London TravelWatch area</div>
+          <div class="swatch" style="background:#0b7a3b;"></div>
+          <div>London TravelWatch station</div>
+          <div class="swatch" style="background:#b2182b; opacity:0.10;"></div>
+          <div>Transport Focus area</div>
+          <div class="swatch" style="background:#b2182b;"></div>
+          <div>Transport Focus station</div>
+        </div>
+      `;
+      return div;
+    };
+    keyControl.addTo(map);
+
+    // Layers
+    const ltwStationsLayer = L.layerGroup().addTo(map);
+    const tfStationsLayer  = L.layerGroup(); // off by default
+    let ltwAreaLayer = null;
+    let tfAreaLayer  = null;
+
+    // Grouping
+    const stationGroups = new Map();
+    const allGroupMarkers = []; // { name, nameNorm, marker, lat, lon, remit }
+
+    function meanLatLon(points) {
+      let sumLat = 0, sumLon = 0;
+      for (const p of points) { sumLat += p.lat; sumLon += p.lon; }
+      return { lat: sumLat / points.length, lon: sumLon / points.length };
+    }
+
+    function circleStyle(remit) {
+      // bigger helps mobile clicking
+      return { radius: 7, weight: 1, opacity: 1.0, fillOpacity: 0.92 };
+    }
+
+    function circleColors(remit) {
+      return remit === REMIT_LTW
+        ? { color: "#0b7a3b", fillColor: "#0b7a3b" }
+        : { color: "#b2182b", fillColor: "#b2182b" };
+    }
+
+    function updateGroupMarker(group) {
+      const { lat, lon } = meanLatLon(group.points);
+      group.lat = lat; group.lon = lon;
+
+      const modes = Array.from(group.modes).sort((a,b)=>a.localeCompare(b));
+      const modesText = modes.length ? modes.join(", ") : "—";
+      const noteHtml = group.specialNote
+        ? `<br><strong>${escapeHtml(group.specialNote)}</strong>`
+        : "";
+
+      const popupHtml = `
+        <b style="font-size:16px">${escapeHtml(group.name)}</b><br>
+        Remit: ${escapeHtml(group.remit)}<br>
+        Modes: ${escapeHtml(modesText)}${noteHtml}
+      `;
+
+      if (!group.marker) {
+        group.marker = L.circleMarker([lat, lon], {
+          ...circleStyle(group.remit),
+          ...circleColors(group.remit)
+        });
+
+        group.marker.bindPopup(popupHtml, { autoPan: false });
+
+        if (group.remit === REMIT_LTW) group.marker.addTo(ltwStationsLayer);
+        else group.marker.addTo(tfStationsLayer);
+
+        allGroupMarkers.push({
+          name: group.name,
+          nameNorm: normalizeName(group.name),
+          marker: group.marker,
+          lat,
+          lon,
+          remit: group.remit
+        });
+      } else {
+        group.marker.setLatLng([lat, lon]);
+        group.marker.setPopupContent(popupHtml);
+      }
+    }
+
+    async function loadStationsFromCSV() {
+      const resp = await fetch(CSV_FILE, { cache: "no-store" });
+      if (!resp.ok) throw new Error(`CSV fetch failed: ${resp.status} ${resp.statusText}`);
+      const csvText = await resp.text();
+
+      const parsed = Papa.parse(csvText, { header: true, dynamicTyping: true, skipEmptyLines: true });
+      if (parsed.errors && parsed.errors.length) console.warn("PapaParse errors:", parsed.errors);
+
+      const rows = parsed.data || [];
+      let bad = 0;
+
+      for (const r of rows) {
+        const lat = r.latitude;
+        const lon = r.longitude;
+
+        if (typeof lat !== "number" || typeof lon !== "number" || !isFinite(lat) || !isFinite(lon)) {
+          bad++;
+          continue;
+        }
+
+        const remit = toBool(r.in_ltw_area) ? REMIT_LTW : REMIT_TF;
+        const name = String(r.name || "(no name)").trim();
+        const mode = String(r.mode || "").trim();
+        const note = (r.special_note !== undefined && r.special_note !== null)
+          ? String(r.special_note).trim()
+          : "";
+
+        const gKey = `${normalizeName(name)}||${remit}`;
+        let group = stationGroups.get(gKey);
+        if (!group) {
+          group = { key: gKey, name, remit, points: [], modes: new Set(), marker: null, lat: null, lon: null, specialNote: "" };
+          stationGroups.set(gKey, group);
+        }
+
+        group.points.push({ lat, lon });
+        if (mode) group.modes.add(mode);
+        if (!group.specialNote && note) group.specialNote = note;
+      }
+
+      for (const group of stationGroups.values()) updateGroupMarker(group);
+
+      console.log(`Stations loaded (grouped): groups=${stationGroups.size}, bad=${bad}, rows=${rows.length}`);
+    }
+
+    async function loadBoundaryGeoJSON() {
+      const resp = await fetch(BOUNDARY_FILE, { cache: "no-store" });
+      if (!resp.ok) throw new Error(`Boundary fetch failed: ${resp.status} ${resp.statusText}`);
+      const geo = await resp.json();
+
+      const feats = (geo && geo.features) ? geo.features : [];
+      const ltwFeats = [];
+      const tfFeats = [];
+
+      for (const f of feats) {
+        const props = f.properties || {};
+        const tag = String(props.area || props.remit || "").toLowerCase();
+        if (tag === "ltw") ltwFeats.push(f);
+        if (tag === "tf" || tag === "gb_rest" || tag === "transport_focus") tfFeats.push(f);
+      }
+
+      if (ltwAreaLayer) { map.removeLayer(ltwAreaLayer); ltwAreaLayer = null; }
+      if (tfAreaLayer)  { map.removeLayer(tfAreaLayer);  tfAreaLayer = null; }
+
+      if (ltwFeats.length) {
+        ltwAreaLayer = L.geoJSON({ type: "FeatureCollection", features: ltwFeats }, {
+          interactive: false,
+          style: { color: "#0b7a3b", weight: 3, opacity: 1, fillColor: "#0b7a3b", fillOpacity: 0.12 }
+        });
+      }
+
+      if (tfFeats.length) {
+        tfAreaLayer = L.geoJSON({ type: "FeatureCollection", features: tfFeats }, {
+          interactive: false,
+          style: { color: "transparent", weight: 0, opacity: 0, fillColor: "#b2182b", fillOpacity: 0.09 }
+        });
+      }
+
+      applyLayerToggles();
+    }
+
+    function applyLayerToggles() {
+      const showLtwArea     = document.getElementById("chkLtwArea").checked;
+      const showLtwStations = document.getElementById("chkLtwStations").checked;
+      const showTfArea      = document.getElementById("chkTfArea").checked;
+      const showTfStations  = document.getElementById("chkTfStations").checked;
+
+      if (ltwAreaLayer) { if (showLtwArea) map.addLayer(ltwAreaLayer); else map.removeLayer(ltwAreaLayer); }
+      if (tfAreaLayer)  { if (showTfArea)  map.addLayer(tfAreaLayer);  else map.removeLayer(tfAreaLayer); }
+
+      if (showLtwStations) map.addLayer(ltwStationsLayer); else map.removeLayer(ltwStationsLayer);
+      if (showTfStations)  map.addLayer(tfStationsLayer);  else map.removeLayer(tfStationsLayer);
+    }
+
+    // Search scoring (prevents Bow -> Bowling)
+    function scoreCandidate(candidate, qNorm) {
+      const n = candidate.nameNorm;
+
+      if (n === qNorm) return 0;
+
+      const tokens = n.split(" ");
+      const qTokens = qNorm.split(" ").filter(Boolean);
+
+      if (qTokens.length === 1 && tokens.includes(qTokens[0])) return 10;
+
+      if (n.startsWith(qNorm + " ")) return 20;
+      if (n.startsWith(qNorm)) return 30;
+
+      if ((" " + n + " ").includes(" " + qNorm + " ")) return 40;
+      if (n.includes(qNorm)) return 60;
+
+      return 999;
+    }
+
+    function findBestMatch(qRaw) {
+      const qNorm = normalizeName(qRaw);
+      if (!qNorm) return null;
+
+      let best = null;
+      let bestScore = Infinity;
+
+      for (const c of allGroupMarkers) {
+        const s = scoreCandidate(c, qNorm);
+        if (s < bestScore) {
+          bestScore = s;
+          best = c;
+        } else if (s === bestScore && best && c.name.length < best.name.length) {
+          best = c;
+        }
+      }
+
+      if (bestScore >= 999) return null;
+      return best;
+    }
+
+    function doSearchWithHit(hit) {
+      if (!hit) return;
+
+      // ensure layer visible
+      if (hit.remit === REMIT_LTW) document.getElementById("chkLtwStations").checked = true;
+      else document.getElementById("chkTfStations").checked = true;
+
+      applyLayerToggles();
+
+      map.setView([hit.lat, hit.lon], 14, { animate: true });
+      hit.marker.openPopup();
+    }
+
+    function doSearch() {
+      const raw = txtSearch.value;
+      const hit = findBestMatch(raw);
+      if (!hit) return alert(`No match found for: ${raw}`);
+      doSearchWithHit(hit);
+    }
+
+    // ===== Typeahead dropdown =====
+    const txtSearch = document.getElementById("txtSearch");
+    const suggestionsEl = document.getElementById("suggestions");
+    let suggestionItems = [];
+    let activeIndex = -1;
+
+    function getTopSuggestions(qRaw, limit = 8) {
+      const qNorm = normalizeName(qRaw);
+      if (!qNorm) return [];
+
+      const scored = allGroupMarkers
+        .map(c => ({ c, s: scoreCandidate(c, qNorm) }))
+        .filter(x => x.s < 999)
+        .sort((a,b) => (a.s - b.s) || (a.c.name.length - b.c.name.length) || a.c.name.localeCompare(b.c.name));
+
+      return scored.slice(0, limit).map(x => x.c);
+    }
+
+    function renderSuggestions(list) {
+      suggestionItems = list;
+      activeIndex = -1;
+
+      if (!list.length) {
+        suggestionsEl.classList.remove("open");
+        suggestionsEl.innerHTML = "";
+        return;
+      }
+
+      suggestionsEl.innerHTML = list.map((m, idx) => {
+        const badge = (m.remit === REMIT_LTW) ? "LTW" : "TF";
+        const badgeClass = (m.remit === REMIT_LTW) ? "ltw" : "tf";
+        return `
+          <div class="s-item" role="option" data-idx="${idx}">
+            <div class="s-name">${escapeHtml(m.name)}</div>
+            <div class="s-badge ${badgeClass}">${badge}</div>
+          </div>
+        `;
+      }).join("");
+
+      suggestionsEl.classList.add("open");
+
+      // Click selection
+      suggestionsEl.querySelectorAll(".s-item").forEach(el => {
+        el.addEventListener("click", () => {
+          const idx = Number(el.getAttribute("data-idx"));
+          const hit = suggestionItems[idx];
+          suggestionsEl.classList.remove("open");
+          doSearchWithHit(hit);
+        });
+      });
+    }
+
+    function setActive(idx) {
+      const nodes = suggestionsEl.querySelectorAll(".s-item");
+      nodes.forEach(n => n.classList.remove("active"));
+      if (idx >= 0 && idx < nodes.length) {
+        nodes[idx].classList.add("active");
+        activeIndex = idx;
+      } else {
+        activeIndex = -1;
+      }
+    }
+
+    txtSearch.addEventListener("input", () => {
+      const val = txtSearch.value;
+      const list = getTopSuggestions(val, 8);
+      renderSuggestions(list);
+    });
+
+    txtSearch.addEventListener("keydown", (e) => {
+      if (!suggestionsEl.classList.contains("open")) {
+        if (e.key === "Enter") { e.preventDefault(); doSearch(); }
+        return;
+      }
+
+      const nodes = suggestionsEl.querySelectorAll(".s-item");
+      if (e.key === "ArrowDown") {
+        e.preventDefault();
+        const next = Math.min((activeIndex < 0 ? -1 : activeIndex) + 1, nodes.length - 1);
+        setActive(next);
+      } else if (e.key === "ArrowUp") {
+        e.preventDefault();
+        const prev = Math.max((activeIndex < 0 ? nodes.length : activeIndex) - 1, 0);
+        setActive(prev);
+      } else if (e.key === "Enter") {
+        e.preventDefault();
+        if (activeIndex >= 0 && suggestionItems[activeIndex]) {
+          const hit = suggestionItems[activeIndex];
+          suggestionsEl.classList.remove("open");
+          doSearchWithHit(hit);
+        } else {
+          suggestionsEl.classList.remove("open");
+          doSearch();
+        }
+      } else if (e.key === "Escape") {
+        suggestionsEl.classList.remove("open");
+      }
+    });
+
+    // Close suggestions if user clicks elsewhere
+    document.addEventListener("click", (e) => {
+      if (!e.target.closest(".search-wrap")) {
+        suggestionsEl.classList.remove("open");
+      }
+    });
+
+    // Buttons
+    document.getElementById("btnSearch").addEventListener("click", doSearch);
+    document.getElementById("btnZoomLtw").addEventListener("click", () => {
+      if (ltwAreaLayer) map.fitBounds(ltwAreaLayer.getBounds(), { padding: [40, 40] });
+    });
+
+    // Chevron
+    const togglesWrap = document.getElementById("togglesWrap");
+    const btnChevron = document.getElementById("btnChevron");
+    function setTogglesCollapsed(collapsed) {
+      if (collapsed) togglesWrap.classList.add("collapsed");
+      else togglesWrap.classList.remove("collapsed");
+      btnChevron.setAttribute("aria-expanded", collapsed ? "false" : "true");
+    }
+    btnChevron.addEventListener("click", () => {
+      setTogglesCollapsed(!togglesWrap.classList.contains("collapsed"));
+    });
+
+    // Toggle wiring
+    document.getElementById("chkLtwArea").addEventListener("change", applyLayerToggles);
+    document.getElementById("chkLtwStations").addEventListener("change", applyLayerToggles);
+    document.getElementById("chkTfArea").addEventListener("change", applyLayerToggles);
+    document.getElementById("chkTfStations").addEventListener("change", applyLayerToggles);
+
+    // Init
+    (async function init() {
+      try {
+        setTogglesCollapsed(isMobile());
+        await loadStationsFromCSV();
+        await loadBoundaryGeoJSON();
+        applyLayerToggles();
+      } catch (e) {
+        console.error(e);
+        alert("Map data failed to load. Please refresh and try again.");
+      }
+    })();
+  </script>
+</body>
+</html>
